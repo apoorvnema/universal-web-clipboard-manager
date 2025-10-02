@@ -25,19 +25,14 @@
       color: #212529;
     }
 
-    .storage-info {
-      font-size: 11px;
-      color: #6c757d;
-      margin-top: 4px;
-    }
-
-    .storage-warning {
-      color: #dc3545;
-      font-weight: 500;
+    .header-actions {
+      margin-top: 8px;
+      display: flex;
+      gap: 8px;
+      justify-content: center;
     }
 
     .clear-all-btn {
-      margin-top: 8px;
       padding: 4px 12px;
       background: #dc3545;
       color: white;
@@ -49,6 +44,15 @@
 
     .clear-all-btn:hover {
       background: #c82333;
+    }
+
+    .btn-secondary {
+      background: #6c757d;
+      color: white;
+    }
+
+    .btn-secondary:hover {
+      background: #545b62;
     }
 
     .empty-state {
@@ -179,19 +183,69 @@
       padding: 20px;
       color: #6c757d;
     }
+
+    .back-btn {
+      margin-bottom: 16px;
+      width: 100%;
+    }
+
+    .settings-view {
+      padding: 16px 0;
+    }
+
+    .domain-list {
+      margin-top: 16px;
+    }
+
+    .domain-item {
+      display: flex;
+      align-items: center;
+      padding: 8px 0;
+      border-bottom: 1px solid #f1f3f4;
+    }
+
+    .domain-item:last-child {
+      border-bottom: none;
+    }
+
+    .pagination {
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      margin: 16px 0;
+      padding: 12px;
+      background: #f8f9fa;
+      border-radius: 8px;
+    }
+
+    .pagination button:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+
+    h2 {
+      font-size: 16px;
+      color: #212529;
+      margin: 16px 0;
+      text-align: center;
+    }
   </style>
 </head>
 <body>
   <div class="header">
-    <h1>Mobbin Clipboard Manager</h1>
-    <div id="storage-info" class="storage-info"></div>
-    <button id="clear-all-btn" class="clear-all-btn" style="display: none;">Clear All Data</button>
+    <h1>Universal Clipboard Manager</h1>
+    <div class="header-actions">
+      <button id="settings-btn" class="btn btn-secondary">Settings</button>
+      <button id="debug-btn" class="btn btn-secondary">Debug DB</button>
+      <button id="clear-all-btn" class="clear-all-btn" style="display: none;">Clear All Data</button>
+    </div>
   </div>
   
   <div id="loading" class="loading">Loading...</div>
   <div id="empty-state" class="empty-state" style="display: none;">
     <p>No clipboard data captured yet.</p>
-    <p>Visit mobbin.com and copy some flows to get started!</p>
+    <p>Visit enabled domains and copy content to get started!</p>
+    <p>Configure domains in Settings.</p>
   </div>
   <div id="clipboard-container"></div>
 

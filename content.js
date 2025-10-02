@@ -1,15 +1,37 @@
-// Content script for mobbin.com
-class MobbinClipboardCapture {
+// Universal content script for clipboard capture
+class UniversalClipboardCapture {
   constructor() {
     this.currentApp = null;
     this.currentFlow = null;
+    this.currentDomain = window.location.hostname;
+    this.isEnabled = false;
     this.init();
   }
 
-  init() {
-    this.detectAppAndFlow();
-    this.setupClipboardListener();
-    this.observePageChanges();
+  async init() {
+    console.log('Initializing clipboard capture for domain:', this.currentDomain);
+    
+    try {
+      // Check if this domain is enabled for clipboard capture
+      const response = await chrome.runtime.sendMessage({ 
+        action: 'checkDomainEnabled', 
+        domain: this.currentDomain 
+      });
+      
+      console.log('Domain check response:', response);
+      
+      if (response && response.enabled) {
+        this.isEnabled = true;
+        this.detectAppAndFlow();
+        this.setupClipboardListener();
+        this.observePageChanges();
+        console.log(`✅ Clipboard capture enabled for ${this.currentDomain}`);
+      } else {
+        console.log(`❌ Clipboard capture disabled for ${this.currentDomain}`);
+      }
+    } catch (error) {
+      console.error('Failed to initialize clipboard capture:', error);
+    }
   }
 
   detectAppAndFlow() {
@@ -19,55 +41,87 @@ class MobbinClipboardCapture {
   }
 
   detectAppName() {
-    // Extract app name from the specific h1 element structure
-    const appTitleElement = document.querySelector('h1.text-title-2');
-    if (appTitleElement) {
-      // Get the first text node which contains the app name (e.g., "Zomato")
-      const appName = appTitleElement.childNodes[0]?.textContent?.trim();
-      if (appName) {
-        this.currentApp = appName;
-        return;
+    if (this.currentDomain === 'mobbin.com') {
+      // Mobbin-specific detection
+      const appTitleElement = document.querySelector('h1.text-title-2');
+      if (appTitleElement) {
+        const appName = appTitleElement.childNodes[0]?.textContent?.trim();
+        if (appName) {
+          this.currentApp = appName;
+          return;
+        }
       }
-    }
 
-    // Fallback: try to extract from URL
-    const urlParts = window.location.pathname.split('/');
-    const appIndex = urlParts.indexOf('apps');
-    
-    if (appIndex !== -1 && urlParts[appIndex + 1]) {
-      this.currentApp = this.formatAppName(urlParts[appIndex + 1]);
+      const urlParts = window.location.pathname.split('/');
+      const appIndex = urlParts.indexOf('apps');
+      
+      if (appIndex !== -1 && urlParts[appIndex + 1]) {
+        this.currentApp = this.formatAppName(urlParts[appIndex + 1]);
+      }
+    } else {
+      // Generic detection for other domains
+      this.currentApp = this.detectGenericAppName();
     }
   }
 
-  detectFlowName() {
-    // Extract flow name from div with id attribute - accept ANY meaningful id
-    const flowElements = document.querySelectorAll('div[id]');
-    for (const element of flowElements) {
-      const flowId = element.id;
-      // Accept any id that looks like a flow name (not empty, not generic)
-      if (flowId && flowId.length > 2 && !this.isGenericId(flowId)) {
-        this.currentFlow = flowId;
-        console.log('Found flow from div id:', flowId);
-        break;
-      }
+  detectGenericAppName() {
+    // Try to detect app name from page title, h1, or domain
+    const title = document.title;
+    const h1 = document.querySelector('h1');
+    
+    if (h1 && h1.textContent.trim()) {
+      return h1.textContent.trim().split(' ')[0];
     }
+    
+    if (title && title !== this.currentDomain) {
+      return title.split(' ')[0];
+    }
+    
+    return this.currentDomain.split('.')[0];
+  }
 
-    // Fallback: look for flow name in the flow title text
-    if (!this.currentFlow) {
-      const flowTitleElement = document.querySelector('.underline.decoration-transparent');
-      if (flowTitleElement) {
-        const flowText = flowTitleElement.textContent.trim();
-        if (flowText && flowText.length > 2) {
-          this.currentFlow = flowText;
-          console.log('Found flow from title text:', flowText);
+  detectFlowName() {
+    if (this.currentDomain === 'mobbin.com') {
+      // Mobbin-specific flow detection
+      const flowElements = document.querySelectorAll('div[id]');
+      for (const element of flowElements) {
+        const flowId = element.id;
+        if (flowId && flowId.length > 2 && !this.isGenericId(flowId)) {
+          this.currentFlow = flowId;
+          console.log('Found flow from div id:', flowId);
+          break;
         }
       }
-    }
 
-    // Final fallback: extract from URL if on flows page
-    if (!this.currentFlow && window.location.pathname.includes('flows')) {
-      this.currentFlow = 'general';
+      if (!this.currentFlow) {
+        const flowTitleElement = document.querySelector('.underline.decoration-transparent');
+        if (flowTitleElement) {
+          const flowText = flowTitleElement.textContent.trim();
+          if (flowText && flowText.length > 2) {
+            this.currentFlow = flowText;
+            console.log('Found flow from title text:', flowText);
+          }
+        }
+      }
+
+      if (!this.currentFlow && window.location.pathname.includes('flows')) {
+        this.currentFlow = 'general';
+      }
+    } else {
+      // Generic flow detection for other domains
+      this.currentFlow = this.detectGenericFlowName();
     }
+  }
+
+  detectGenericFlowName() {
+    // Try to detect flow from URL path or page content
+    const pathParts = window.location.pathname.split('/').filter(part => part);
+    
+    if (pathParts.length > 0) {
+      return pathParts[pathParts.length - 1].replace(/[-_]/g, ' ');
+    }
+    
+    return 'general';
   }
 
   findFlowContainer(button) {
@@ -195,47 +249,63 @@ class MobbinClipboardCapture {
   }
 
   setupClipboardListener() {
-    // Listen specifically for "Copy to Figma" button clicks
-    document.addEventListener('click', (event) => {
-      const target = event.target;
-      const button = target.closest('button');
-      
-      // Check if this is the Copy to Figma button
-      if (button) {
-        const buttonText = button.textContent.toLowerCase();
-        const hasFigmaIcon = button.querySelector('svg[data-sentry-component="FigmaOutlinedIcon"]');
-        
-        if ((buttonText.includes('copy') && hasFigmaIcon) || 
-            buttonText.includes('copy to figma')) {
-          console.log('Copy to Figma button clicked');
-          
-          // Find the specific flow being copied by traversing up the DOM
-          const flowContainer = this.findFlowContainer(button);
-          const specificFlow = this.extractFlowFromContainer(flowContainer);
-          
-          console.log('Detected specific flow:', specificFlow);
-          
-          // Re-detect app name
-          this.detectAppName();
-          
-          // Set the specific flow we found
-          if (specificFlow) {
-            this.currentFlow = specificFlow;
-          }
-          
-          // Wait for "Flow copied" message to appear, then capture
-          this.waitForFlowCopiedMessage();
-        }
-      }
-    });
+    if (!this.isEnabled) return;
 
-    // Also listen for general copy events as backup
-    document.addEventListener('copy', async () => {
-      // Only capture if we're on a flows page
-      if (window.location.pathname.includes('flows')) {
+    if (this.currentDomain === 'mobbin.com') {
+      // Mobbin-specific listeners
+      document.addEventListener('click', (event) => {
+        const target = event.target;
+        const button = target.closest('button');
+        
+        if (button) {
+          const buttonText = button.textContent.toLowerCase();
+          const hasFigmaIcon = button.querySelector('svg[data-sentry-component="FigmaOutlinedIcon"]');
+          
+          if ((buttonText.includes('copy') && hasFigmaIcon) || 
+              buttonText.includes('copy to figma')) {
+            console.log('Copy to Figma button clicked');
+            
+            const flowContainer = this.findFlowContainer(button);
+            const specificFlow = this.extractFlowFromContainer(flowContainer);
+            
+            console.log('Detected specific flow:', specificFlow);
+            
+            this.detectAppName();
+            
+            if (specificFlow) {
+              this.currentFlow = specificFlow;
+            }
+            
+            this.waitForFlowCopiedMessage();
+          }
+        }
+      });
+
+      document.addEventListener('copy', async () => {
+        if (window.location.pathname.includes('flows')) {
+          setTimeout(() => this.handleClipboardCapture(), 100);
+        }
+      });
+    } else {
+      // Generic clipboard listeners for other domains
+      document.addEventListener('copy', async () => {
         setTimeout(() => this.handleClipboardCapture(), 100);
-      }
-    });
+      });
+
+      // Listen for common copy button patterns
+      document.addEventListener('click', (event) => {
+        const target = event.target;
+        const button = target.closest('button, [role="button"], .copy-btn, .btn-copy');
+        
+        if (button) {
+          const buttonText = button.textContent.toLowerCase();
+          if (buttonText.includes('copy')) {
+            console.log('Copy button clicked on', this.currentDomain);
+            setTimeout(() => this.handleClipboardCapture(), 500);
+          }
+        }
+      });
+    }
   }
 
   async handleClipboardCapture() {
@@ -268,6 +338,7 @@ class MobbinClipboardCapture {
         }
 
         const captureData = {
+          domain: this.currentDomain,
           appName: this.currentApp || 'Unknown App',
           flowName: this.currentFlow || 'general',
           clipboardContent: clipboardData,
@@ -452,7 +523,7 @@ class MobbinClipboardCapture {
 
 // Initialize when page loads
 if (document.readyState === 'loading') {
-  document.addEventListener('DOMContentLoaded', () => new MobbinClipboardCapture());
+  document.addEventListener('DOMContentLoaded', () => new UniversalClipboardCapture());
 } else {
-  new MobbinClipboardCapture();
+  new UniversalClipboardCapture();
 }

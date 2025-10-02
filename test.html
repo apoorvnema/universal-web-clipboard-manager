@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Clipboard Test Page</title>
+</head>
+<body>
+    <h1>Test Clipboard Capture</h1>
+    <p>This is a test page for the Universal Clipboard Manager extension.</p>
+    
+    <button onclick="copyText()">Copy Test Text</button>
+    <button onclick="copyJSON()">Copy Test JSON</button>
+    
+    <script>
+        function copyText() {
+            navigator.clipboard.writeText('This is a test clipboard content from test page');
+        }
+        
+        function copyJSON() {
+            const testData = {
+                key: "test-key",
+                payload: "test-payload-data",
+                timestamp: new Date().toISOString()
+            };
+            navigator.clipboard.writeText(JSON.stringify(testData));
+        }
+    </script>
+</body>
+</html>

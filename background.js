@@ -1,257 +1,330 @@
 // Background script for handling storage and communication
+importScripts('indexeddb.js');
+
+let clipboardDB = null;
+
+// Initialize IndexedDB
+async function initDB() {
+  if (!clipboardDB || !clipboardDB.db) {
+    try {
+      console.log('Creating new ClipboardDB instance...');
+      clipboardDB = new ClipboardDB();
+      await clipboardDB.init();
+      console.log('IndexedDB initialized successfully');
+    } catch (error) {
+      console.error('Failed to initialize IndexedDB:', error);
+      clipboardDB = null; // Reset on error
+      throw error;
+    }
+  }
+  return clipboardDB;
+}
+
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
-  if (request.action === 'saveClipboard') {
+  if (request.action === 'checkDomainEnabled') {
+    checkDomainEnabled(request.domain)
+      .then(enabled => sendResponse({ enabled }))
+      .catch(error => sendResponse({ enabled: false, error: error.message }));
+    return true;
+  } else if (request.action === 'saveClipboard') {
     saveClipboardData(request.data)
       .then(() => sendResponse({ success: true }))
       .catch(error => sendResponse({ success: false, error: error.message }));
-    return true; // Keep message channel open for async response
+    return true;
+  } else if (request.action === 'getDomains') {
+    getDomains(request.page, request.limit).then(data => sendResponse(data));
+    return true;
+  } else if (request.action === 'getApps') {
+    getApps(request.domain, request.page, request.limit).then(data => sendResponse(data));
+    return true;
+  } else if (request.action === 'getFlows') {
+    getFlows(request.appId, request.page, request.limit).then(data => sendResponse(data));
+    return true;
   } else if (request.action === 'getClipboards') {
-    getClipboardData().then(data => sendResponse(data));
-    return true; // Keep message channel open for async response
+    getClipboards(request.flowId, request.page, request.limit).then(data => sendResponse(data));
+    return true;
   } else if (request.action === 'deleteClipboard') {
     deleteClipboardData(request.id).then(() => sendResponse({ success: true }));
     return true;
-  } else if (request.action === 'getStorageInfo') {
-    getStorageInfo().then(info => sendResponse(info));
+  } else if (request.action === 'deleteFlow') {
+    deleteFlowData(request.flowId)
+      .then(() => sendResponse({ success: true }))
+      .catch(error => sendResponse({ success: false, error: error.message }));
+    return true;
+  } else if (request.action === 'getEnabledDomains') {
+    getEnabledDomains().then(domains => sendResponse(domains));
+    return true;
+  } else if (request.action === 'setEnabledDomains') {
+    setEnabledDomains(request.domains)
+      .then(() => sendResponse({ success: true }))
+      .catch(error => sendResponse({ success: false, error: error.message }));
+    return true;
+  } else if (request.action === 'clearAllData') {
+    clearAllData().then(() => sendResponse({ success: true }));
+    return true;
+  } else if (request.action === 'debugDB') {
+    debugDB().then(result => sendResponse(result));
+    return true;
+  } else if (request.action === 'testDB') {
+    testDB().then(result => sendResponse(result));
     return true;
   }
 });
 
+async function checkDomainEnabled(domain) {
+  try {
+    const db = await initDB();
+    const enabledDomains = await db.getEnabledDomains();
+    console.log('Checking domain:', domain, 'Enabled domains:', enabledDomains);
+    const isEnabled = enabledDomains.includes(domain);
+    console.log('Domain enabled:', isEnabled);
+    return isEnabled;
+  } catch (error) {
+    console.error('Failed to check domain enabled:', error);
+    return false;
+  }
+}
+
 async function saveClipboardData(data) {
   try {
-    // Get existing data
-    const result = await chrome.storage.local.get(['clipboards']);
-    const clipboards = result.clipboards || {};
-
-    // Check storage usage before saving
-    const storageUsage = await chrome.storage.local.getBytesInUse();
-    const maxStorage = chrome.storage.local.QUOTA_BYTES || 5242880; // 5MB default
-    const usagePercent = (storageUsage / maxStorage) * 100;
-
-    console.log(`Storage usage: ${Math.round(usagePercent)}% (${Math.round(storageUsage / 1024)}KB / ${Math.round(maxStorage / 1024)}KB)`);
-
-    // If storage is getting full, clean up old entries
-    if (usagePercent > 80) {
-      console.log('Storage getting full, cleaning up old entries...');
-      await cleanupOldEntries(clipboards);
-    }
-
-    // Organize by app name
-    if (!clipboards[data.appName]) {
-      clipboards[data.appName] = {};
-    }
-
-    // Organize by flow within app
-    if (!clipboards[data.appName][data.flowName]) {
-      clipboards[data.appName][data.flowName] = [];
-    }
-
-    // Compress large content to save space
-    let content = data.clipboardContent;
-    let isCompressed = false;
-
-    if (content.length > 50000) { // 50KB threshold
-      try {
-        content = await compressString(content);
-        isCompressed = true;
-        console.log(`Compressed content from ${data.clipboardContent.length} to ${content.length} bytes`);
-      } catch (e) {
-        console.warn('Compression failed, storing original:', e);
-        content = data.clipboardContent;
-      }
-    }
-
-    // Add new clipboard entry with unique ID
-    const clipboardEntry = {
-      id: Date.now().toString(),
-      content: content,
-      isCompressed: isCompressed,
-      originalSize: data.clipboardContent.length,
-      contentPreview: data.contentPreview,
-      isComplexData: data.isComplexData,
-      timestamp: data.timestamp,
-      url: data.url
-    };
-
-    clipboards[data.appName][data.flowName].unshift(clipboardEntry);
-
-    // Keep fewer entries per flow to manage storage better
-    const maxEntriesPerFlow = usagePercent > 60 ? 3 : 5;
-    if (clipboards[data.appName][data.flowName].length > maxEntriesPerFlow) {
-      clipboards[data.appName][data.flowName] = clipboards[data.appName][data.flowName].slice(0, maxEntriesPerFlow);
-    }
-
-    // Try to save, with fallback cleanup if quota exceeded
-    try {
-      await chrome.storage.local.set({ clipboards });
-      console.log('Clipboard data saved successfully');
-    } catch (quotaError) {
-      if (quotaError.message.includes('quota')) {
-        console.log('Quota exceeded, performing aggressive cleanup...');
-        await aggressiveCleanup(clipboards);
-
-        // Try saving again with cleaned data
-        clipboards[data.appName][data.flowName] = [clipboardEntry]; // Keep only this new entry
-        await chrome.storage.local.set({ clipboards });
-        console.log('Clipboard data saved after cleanup');
-      } else {
-        throw quotaError;
-      }
-    }
-
+    const db = await initDB();
+    const clipboardEntry = await db.saveClipboard(data);
+    console.log('Clipboard data saved successfully:', clipboardEntry);
+    return clipboardEntry;
   } catch (error) {
     console.error('Failed to save clipboard data:', error);
-    throw error; // Re-throw to notify content script
+    throw error;
   }
 }
 
-async function compressString(str) {
-  // Simple compression using built-in compression
-  const encoder = new TextEncoder();
-  const data = encoder.encode(str);
-
-  const compressed = await new Response(
-    new ReadableStream({
-      start(controller) {
-        controller.enqueue(data);
-        controller.close();
-      }
-    }).pipeThrough(new CompressionStream('gzip'))
-  ).arrayBuffer();
-
-  // Convert to base64 for storage
-  const base64 = btoa(String.fromCharCode(...new Uint8Array(compressed)));
-  return base64;
-}
-
-async function decompressString(compressedBase64) {
-  // Decompress base64 compressed string
-  const compressed = Uint8Array.from(atob(compressedBase64), c => c.charCodeAt(0));
-
-  const decompressed = await new Response(
-    new ReadableStream({
-      start(controller) {
-        controller.enqueue(compressed);
-        controller.close();
-      }
-    }).pipeThrough(new DecompressionStream('gzip'))
-  ).arrayBuffer();
-
-  const decoder = new TextDecoder();
-  return decoder.decode(decompressed);
-}
-
-async function cleanupOldEntries(clipboards) {
-  // Remove entries older than 7 days
-  const weekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
-
-  for (const appName in clipboards) {
-    for (const flowName in clipboards[appName]) {
-      clipboards[appName][flowName] = clipboards[appName][flowName].filter(
-        entry => entry.timestamp > weekAgo
-      );
-
-      // Keep only 2 most recent entries per flow
-      if (clipboards[appName][flowName].length > 2) {
-        clipboards[appName][flowName] = clipboards[appName][flowName].slice(0, 2);
-      }
-
-      // Clean up empty flows
-      if (clipboards[appName][flowName].length === 0) {
-        delete clipboards[appName][flowName];
-      }
-    }
-
-    // Clean up empty apps
-    if (Object.keys(clipboards[appName]).length === 0) {
-      delete clipboards[appName];
-    }
-  }
-}
-
-async function aggressiveCleanup(clipboards) {
-  // Keep only the most recent entry per flow
-  for (const appName in clipboards) {
-    for (const flowName in clipboards[appName]) {
-      if (clipboards[appName][flowName].length > 0) {
-        clipboards[appName][flowName] = [clipboards[appName][flowName][0]];
-      }
-    }
-  }
-}
-
-async function getClipboardData() {
+// New paginated API functions
+async function getDomains(page = 0, limit = 3) {
   try {
-    const result = await chrome.storage.local.get(['clipboards']);
-    const clipboards = result.clipboards || {};
-
-    // Decompress any compressed content for display
-    for (const appName in clipboards) {
-      for (const flowName in clipboards[appName]) {
-        for (const entry of clipboards[appName][flowName]) {
-          if (entry.isCompressed && entry.content) {
-            try {
-              entry.content = await decompressString(entry.content);
-              entry.isCompressed = false; // Mark as decompressed for this session
-            } catch (e) {
-              console.warn('Failed to decompress entry:', e);
-              // Keep compressed version, will show preview instead
-            }
-          }
-        }
-      }
-    }
-
-    return clipboards;
-  } catch (error) {
-    console.error('Failed to get clipboard data:', error);
-    return {};
-  }
-}
-
-async function getStorageInfo() {
-  try {
-    const usage = await chrome.storage.local.getBytesInUse();
-    const quota = chrome.storage.local.QUOTA_BYTES || 5242880;
+    const db = await initDB();
+    const domains = await db.getDomains(page, limit);
+    const totalCount = await db.countDomains();
+    
     return {
-      usage: usage,
-      quota: quota,
-      usagePercent: Math.round((usage / quota) * 100),
-      usageKB: Math.round(usage / 1024),
-      quotaKB: Math.round(quota / 1024)
+      data: domains,
+      page,
+      limit,
+      totalCount,
+      hasMore: (page + 1) * limit < totalCount
     };
   } catch (error) {
-    console.error('Failed to get storage info:', error);
-    return { usage: 0, quota: 0, usagePercent: 0 };
+    console.error('Failed to get domains:', error);
+    return { data: [], page, limit, totalCount: 0, hasMore: false };
+  }
+}
+
+async function getApps(domain, page = 0, limit = 3) {
+  try {
+    const db = await initDB();
+    const apps = await db.getAppsByDomain(domain, page, limit);
+    const totalCount = await db.countAppsByDomain(domain);
+    
+    return {
+      data: apps,
+      page,
+      limit,
+      totalCount,
+      hasMore: (page + 1) * limit < totalCount
+    };
+  } catch (error) {
+    console.error('Failed to get apps:', error);
+    return { data: [], page, limit, totalCount: 0, hasMore: false };
+  }
+}
+
+async function getFlows(appId, page = 0, limit = 3) {
+  try {
+    const db = await initDB();
+    const flows = await db.getFlowsByApp(appId, page, limit);
+    const totalCount = await db.countFlowsByApp(appId);
+    
+    return {
+      data: flows,
+      page,
+      limit,
+      totalCount,
+      hasMore: (page + 1) * limit < totalCount
+    };
+  } catch (error) {
+    console.error('Failed to get flows:', error);
+    return { data: [], page, limit, totalCount: 0, hasMore: false };
+  }
+}
+
+async function getClipboards(flowId, page = 0, limit = 5) {
+  try {
+    const db = await initDB();
+    const clipboards = await db.getClipboardsByFlow(flowId, page, limit);
+    const totalCount = await db.countClipboardsByFlow(flowId);
+    
+    return {
+      data: clipboards,
+      page,
+      limit,
+      totalCount,
+      hasMore: (page + 1) * limit < totalCount
+    };
+  } catch (error) {
+    console.error('Failed to get clipboards:', error);
+    return { data: [], page, limit, totalCount: 0, hasMore: false };
   }
 }
 
 async function deleteClipboardData(id) {
   try {
-    const result = await chrome.storage.local.get(['clipboards']);
-    const clipboards = result.clipboards || {};
-
-    // Find and remove the entry with matching ID
-    for (const appName in clipboards) {
-      for (const flowName in clipboards[appName]) {
-        clipboards[appName][flowName] = clipboards[appName][flowName].filter(
-          entry => entry.id !== id
-        );
-
-        // Clean up empty flows
-        if (clipboards[appName][flowName].length === 0) {
-          delete clipboards[appName][flowName];
-        }
-      }
-
-      // Clean up empty apps
-      if (Object.keys(clipboards[appName]).length === 0) {
-        delete clipboards[appName];
-      }
-    }
-
-    await chrome.storage.local.set({ clipboards });
+    const db = await initDB();
+    await db.deleteClipboard(id);
+    console.log('Clipboard deleted:', id);
   } catch (error) {
     console.error('Failed to delete clipboard data:', error);
+    throw error;
   }
 }
+
+async function deleteFlowData(flowId) {
+  try {
+    const db = await initDB();
+    await db.deleteFlow(flowId);
+    console.log('Flow deleted:', flowId);
+  } catch (error) {
+    console.error('Failed to delete flow data:', error);
+    throw error;
+  }
+}
+
+async function getEnabledDomains() {
+  try {
+    const db = await initDB();
+    return await db.getEnabledDomains();
+  } catch (error) {
+    console.error('Failed to get enabled domains:', error);
+    return ['mobbin.com'];
+  }
+}
+
+async function setEnabledDomains(domains) {
+  try {
+    const db = await initDB();
+    await db.setEnabledDomains(domains);
+    console.log('Enabled domains updated:', domains);
+  } catch (error) {
+    console.error('Failed to set enabled domains:', error);
+    throw error;
+  }
+}
+
+async function clearAllData() {
+  try {
+    const db = await initDB();
+    await db.clearAllClipboards();
+    console.log('All clipboard data cleared');
+  } catch (error) {
+    console.error('Failed to clear all data:', error);
+    throw error;
+  }
+}
+
+async function debugDB() {
+  try {
+    console.log('=== DEBUG DB START ===');
+    const db = await initDB();
+    console.log('DB instance:', db);
+    console.log('DB object:', db.db);
+    
+    // Check if database exists and has stores
+    if (!db.db) {
+      return { error: 'Database not initialized' };
+    }
+    
+    const storeNames = Array.from(db.db.objectStoreNames);
+    console.log('Available stores:', storeNames);
+    
+    // Try to count records in clipboards store
+    const transaction = db.db.transaction(['clipboards'], 'readonly');
+    const store = transaction.objectStore('clipboards');
+    
+    return new Promise((resolve, reject) => {
+      const countRequest = store.count();
+      countRequest.onsuccess = () => {
+        const count = countRequest.result;
+        console.log('Total clipboards in DB:', count);
+        
+        // Get all records
+        const getAllRequest = store.getAll();
+        getAllRequest.onsuccess = () => {
+          const allRecords = getAllRequest.result;
+          console.log('All records:', allRecords);
+          resolve({
+            storeNames,
+            count,
+            records: allRecords,
+            success: true
+          });
+        };
+        getAllRequest.onerror = () => {
+          console.error('Failed to get all records:', getAllRequest.error);
+          resolve({
+            storeNames,
+            count,
+            error: 'Failed to get records',
+            success: false
+          });
+        };
+      };
+      countRequest.onerror = () => {
+        console.error('Failed to count records:', countRequest.error);
+        resolve({
+          storeNames,
+          error: 'Failed to count records',
+          success: false
+        });
+      };
+    });
+  } catch (error) {
+    console.error('Debug DB failed:', error);
+    return { error: error.message, success: false };
+  }
+}
+
+async function testDB() {
+  try {
+    console.log('=== TEST DB START ===');
+    
+    // Add a test record
+    const testData = {
+      domain: 'test.com',
+      appName: 'Test App',
+      flowName: 'Test Flow',
+      clipboardContent: 'Test clipboard content',
+      contentPreview: 'Test preview',
+      isComplexData: false,
+      timestamp: new Date().toISOString(),
+      url: 'https://test.com'
+    };
+    
+    console.log('Adding test data:', testData);
+    await saveClipboardData(testData);
+    console.log('Test data added successfully');
+    
+    // Try to retrieve it
+    console.log('Retrieving all clipboards...');
+    const clipboards = await getClipboardData();
+    console.log('Retrieved clipboards:', clipboards);
+    
+    return {
+      success: true,
+      testDataAdded: testData,
+      retrievedData: clipboards
+    };
+  } catch (error) {
+    console.error('Test DB failed:', error);
+    return { error: error.message, success: false };
+  }
+}
+
+
+
