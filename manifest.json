@@ -1,0 +1,30 @@
+{
+  "manifest_version": 3,
+  "name": "Mobbin Clipboard Manager",
+  "version": "1.0",
+  "description": "Captures and organizes clipboard data from mobbin.com",
+  "permissions": [
+    "activeTab",
+    "storage",
+    "clipboardRead",
+    "clipboardWrite",
+    "notifications",
+    "unlimitedStorage"
+  ],
+  "host_permissions": [
+    "https://mobbin.com/*"
+  ],
+  "content_scripts": [
+    {
+      "matches": ["https://mobbin.com/*"],
+      "js": ["content.js"]
+    }
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Mobbin Clipboard Manager"
+  },
+  "background": {
+    "service_worker": "background.js"
+  }
+}
