@@ -284,6 +284,18 @@ class ClipboardDB {
     });
   }
 
+  // Get a single clipboard by ID
+  async getClipboardById(clipboardId) {
+    const transaction = this.db.transaction(['clipboards'], 'readonly');
+    const store = transaction.objectStore('clipboards');
+    
+    return new Promise((resolve, reject) => {
+      const request = store.get(clipboardId);
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+  }
+
   // Count methods for pagination
   async countDomains() {
     const transaction = this.db.transaction(['domains'], 'readonly');

@@ -15,6 +15,8 @@ class FullClipboardManager {
     this.totalCount = 0;
     this.hasMore = false;
     this.searchQuery = '';
+    this.expandedFlows = new Set(); // Track which flows are expanded
+    this.flowClipboards = new Map(); // Cache clipboards for expanded flows
     this.init();
   }
 
@@ -88,8 +90,6 @@ class FullClipboardManager {
         result = await this.loadApps();
       } else if (this.currentView === 'flows') {
         result = await this.loadFlows();
-      } else if (this.currentView === 'clipboards') {
-        result = await this.loadClipboards();
       }
       
       if (result) {
@@ -141,15 +141,20 @@ class FullClipboardManager {
     };
   }
 
-  async loadClipboards() {
-    const clipboards = await this.db.getClipboardsByFlow(this.currentFlowId, this.currentPage, this.clipboardPageSize);
-    const totalCount = await this.db.countClipboardsByFlow(this.currentFlowId);
-    
-    return {
-      data: clipboards,
-      totalCount,
-      hasMore: (this.currentPage + 1) * this.clipboardPageSize < totalCount
-    };
+  async loadClipboardsForFlow(flowId, page = 0, limit = 10) {
+    try {
+      const clipboards = await this.db.getClipboardsByFlow(flowId, page, limit);
+      const totalCount = await this.db.countClipboardsByFlow(flowId);
+      
+      return {
+        data: clipboards,
+        totalCount,
+        hasMore: (page + 1) * limit < totalCount
+      };
+    } catch (error) {
+      console.error('Failed to load clipboards for flow:', error);
+      return { data: [], totalCount: 0, hasMore: false };
+    }
   }
 
   showLoading() {
@@ -205,8 +210,6 @@ class FullClipboardManager {
       this.renderApps();
     } else if (this.currentView === 'flows') {
       this.renderFlows();
-    } else if (this.currentView === 'clipboards') {
-      this.renderClipboards();
     }
     
     // Show pagination if needed
@@ -226,12 +229,7 @@ class FullClipboardManager {
     
     if (this.currentApp) {
       html += ' <span class="breadcrumb-separator">›</span> ';
-      html += `<a href="#" class="breadcrumb-item" data-view="flows" data-app-id="${this.currentAppId}" data-app="${this.currentApp}">${this.currentApp}</a>`;
-    }
-    
-    if (this.currentFlow) {
-      html += ' <span class="breadcrumb-separator">›</span> ';
-      html += `<span class="breadcrumb-item active">${this.currentFlow}</span>`;
+      html += `<span class="breadcrumb-item active">${this.currentApp}</span>`;
     }
     
     breadcrumb.innerHTML = html;
@@ -246,9 +244,7 @@ class FullClipboardManager {
     } else if (this.currentView === 'apps') {
       title.textContent = `Apps in ${this.currentDomain}`;
     } else if (this.currentView === 'flows') {
-      title.textContent = `Flows in ${this.currentApp}`;
-    } else if (this.currentView === 'clipboards') {
-      title.textContent = `Clipboards in ${this.currentFlow}`;
+      title.textContent = `Flows in ${this.currentApp} (Click to expand clipboards)`;
     }
   }
 
@@ -272,24 +268,18 @@ class FullClipboardManager {
     });
   }
 
-  renderFlows() {
-    const grid = document.getElementById('content-grid');
-    if (!grid) return;
-    
-    this.currentData.forEach(flow => {
-      const card = this.createFlowCard(flow);
-      grid.appendChild(card);
-    });
+  async renderFlows() {
+    await this.renderFlowsWithClipboards();
   }
 
-  renderClipboards() {
+  async renderFlowsWithClipboards() {
     const grid = document.getElementById('content-grid');
     if (!grid) return;
     
-    this.currentData.forEach(clipboard => {
-      const card = this.createClipboardCard(clipboard);
-      grid.appendChild(card);
-    });
+    for (const flow of this.currentData) {
+      const flowCard = await this.createExpandableFlowCard(flow);
+      grid.appendChild(flowCard);
+    }
   }
 
   createDomainCard(domain) {
@@ -318,31 +308,76 @@ class FullClipboardManager {
     return card;
   }
 
-  createFlowCard(flow) {
+  async createExpandableFlowCard(flow) {
     const card = document.createElement('div');
-    card.className = 'card';
+    card.className = 'flow-card';
+    card.style.cssText = `
+      border: 1px solid #e9ecef;
+      border-radius: 8px;
+      margin-bottom: 16px;
+      background: white;
+      overflow: hidden;
+    `;
     
-    const cardContent = document.createElement('div');
-    cardContent.innerHTML = `
-      <div class="card-title">📋 ${flow.flowName}</div>
-      <div class="card-meta">First captured: ${new Date(flow.timestamp).toLocaleDateString()}</div>
-      <div class="card-actions">
-        <button class="btn btn-primary btn-sm" data-action="view-flow" data-flow-id="${flow.id}" data-flow-name="${flow.flowName}">View Clipboards</button>
-        <button class="btn btn-danger btn-sm" data-action="delete-flow" data-flow-id="${flow.id}" data-flow-name="${flow.flowName}">Delete</button>
+    // Flow header
+    const header = document.createElement('div');
+    header.className = 'flow-header';
+    header.style.cssText = `
+      padding: 16px;
+      background: #f8f9fa;
+      border-bottom: 1px solid #e9ecef;
+      cursor: pointer;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    `;
+    
+    const isExpanded = this.expandedFlows.has(flow.id);
+    
+    header.innerHTML = `
+      <div>
+        <div style="font-size: 16px; font-weight: 600; color: #212529; margin-bottom: 4px;">
+          📋 ${flow.flowName} ${isExpanded ? '▼' : '▶'}
+        </div>
+        <div style="font-size: 12px; color: #6c757d;">
+          First captured: ${new Date(flow.timestamp).toLocaleDateString()}
+        </div>
+      </div>
+      <div class="flow-actions" style="display: flex; gap: 8px;">
+        <button class="btn btn-danger btn-sm" data-action="delete-flow" data-flow-id="${flow.id}" data-flow-name="${flow.flowName}">🗑️ Delete</button>
       </div>
     `;
     
-    // Add event listeners for the buttons
-    const viewBtn = cardContent.querySelector('[data-action="view-flow"]');
-    const deleteBtn = cardContent.querySelector('[data-action="delete-flow"]');
+    // Clipboards container
+    const clipboardsContainer = document.createElement('div');
+    clipboardsContainer.className = 'clipboards-container';
+    clipboardsContainer.style.display = isExpanded ? 'block' : 'none';
     
-    if (viewBtn) {
-      viewBtn.addEventListener('click', (e) => {
-        e.stopPropagation();
-        this.navigateToFlow(flow.id, flow.flowName);
-      });
+    if (isExpanded) {
+      await this.loadAndRenderClipboards(flow.id, clipboardsContainer);
     }
     
+    // Event listeners
+    header.addEventListener('click', async (e) => {
+      if (e.target.closest('.flow-actions')) return; // Don't toggle if clicking actions
+      
+      if (this.expandedFlows.has(flow.id)) {
+        this.expandedFlows.delete(flow.id);
+        clipboardsContainer.style.display = 'none';
+        header.querySelector('div').innerHTML = header.querySelector('div').innerHTML.replace('▼', '▶');
+      } else {
+        this.expandedFlows.add(flow.id);
+        clipboardsContainer.style.display = 'block';
+        header.querySelector('div').innerHTML = header.querySelector('div').innerHTML.replace('▶', '▼');
+        
+        if (!this.flowClipboards.has(flow.id)) {
+          clipboardsContainer.innerHTML = '<div style="padding: 16px; text-align: center; color: #6c757d;">Loading clipboards...</div>';
+          await this.loadAndRenderClipboards(flow.id, clipboardsContainer);
+        }
+      }
+    });
+    
+    const deleteBtn = header.querySelector('[data-action="delete-flow"]');
     if (deleteBtn) {
       deleteBtn.addEventListener('click', (e) => {
         e.stopPropagation();
@@ -350,48 +385,132 @@ class FullClipboardManager {
       });
     }
     
-    card.appendChild(cardContent);
+    card.appendChild(header);
+    card.appendChild(clipboardsContainer);
+    
     return card;
   }
 
-  createClipboardCard(clipboard) {
-    const card = document.createElement('div');
-    card.className = 'card';
+  async loadAndRenderClipboards(flowId, container) {
+    try {
+      const result = await this.loadClipboardsForFlow(flowId, 0, 10);
+      this.flowClipboards.set(flowId, result);
+      
+      container.innerHTML = '';
+      
+      if (result.data.length === 0) {
+        container.innerHTML = '<div style="padding: 16px; text-align: center; color: #6c757d;">No clipboards found</div>';
+        return;
+      }
+      
+      result.data.forEach(clipboard => {
+        const clipboardItem = this.createClipboardItem(clipboard, flowId);
+        container.appendChild(clipboardItem);
+      });
+      
+      // Add "Load More" button if there are more clipboards
+      if (result.hasMore) {
+        const loadMoreBtn = document.createElement('button');
+        loadMoreBtn.className = 'btn btn-outline';
+        loadMoreBtn.style.cssText = 'margin: 16px; width: calc(100% - 32px);';
+        loadMoreBtn.textContent = 'Load More Clipboards';
+        loadMoreBtn.addEventListener('click', () => this.loadMoreClipboards(flowId, container));
+        container.appendChild(loadMoreBtn);
+      }
+      
+    } catch (error) {
+      console.error('Failed to load clipboards:', error);
+      container.innerHTML = '<div style="padding: 16px; text-align: center; color: #dc3545;">Failed to load clipboards</div>';
+    }
+  }
+
+  createClipboardItem(clipboard, flowId) {
+    const item = document.createElement('div');
+    item.className = 'clipboard-item';
+    item.style.cssText = `
+      padding: 12px 16px;
+      border-bottom: 1px solid #f1f3f4;
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      gap: 12px;
+    `;
     
-    const preview = clipboard.content.length > 200 ? 
-      clipboard.content.substring(0, 200) + '...' : 
+    const preview = clipboard.content.length > 150 ? 
+      clipboard.content.substring(0, 150) + '...' : 
       clipboard.content;
     const timestamp = new Date(clipboard.timestamp).toLocaleString();
     
-    card.innerHTML = `
-      <div class="card-title">📄 Clipboard Entry</div>
-      <div class="card-meta">${timestamp}</div>
-      <div class="card-preview">${this.escapeHtml(preview)}</div>
-      <div class="card-actions">
+    item.innerHTML = `
+      <div style="flex: 1; min-width: 0;">
+        <div style="font-size: 12px; color: #6c757d; margin-bottom: 4px;">${timestamp}</div>
+        <div style="font-size: 14px; color: #495057; background: #f8f9fa; padding: 8px; border-radius: 4px; font-family: monospace; white-space: pre-wrap; word-break: break-word;">
+          ${this.escapeHtml(preview)}
+        </div>
+      </div>
+      <div style="display: flex; gap: 8px; flex-shrink: 0;">
         <button class="btn btn-primary btn-sm" data-action="copy-clipboard" data-clipboard-id="${clipboard.id}">📋 Copy</button>
-        <button class="btn btn-danger btn-sm" data-action="delete-clipboard" data-clipboard-id="${clipboard.id}">🗑️ Delete</button>
+        <button class="btn btn-danger btn-sm" data-action="delete-clipboard" data-clipboard-id="${clipboard.id}" data-flow-id="${flowId}">🗑️</button>
       </div>
     `;
     
-    // Add event listeners for the buttons
-    const copyBtn = card.querySelector('[data-action="copy-clipboard"]');
-    const deleteBtn = card.querySelector('[data-action="delete-clipboard"]');
+    // Add event listeners
+    const copyBtn = item.querySelector('[data-action="copy-clipboard"]');
+    const deleteBtn = item.querySelector('[data-action="delete-clipboard"]');
     
     if (copyBtn) {
-      copyBtn.addEventListener('click', (e) => {
+      copyBtn.addEventListener('click', async (e) => {
         e.stopPropagation();
-        this.copyToClipboard(clipboard.id, copyBtn);
+        await this.copyToClipboard(clipboard.id, copyBtn);
       });
     }
     
     if (deleteBtn) {
-      deleteBtn.addEventListener('click', (e) => {
+      deleteBtn.addEventListener('click', async (e) => {
         e.stopPropagation();
-        this.deleteClipboard(clipboard.id);
+        await this.deleteClipboardFromFlow(clipboard.id, flowId);
       });
     }
     
-    return card;
+    return item;
+  }
+
+  async loadMoreClipboards(flowId, container) {
+    try {
+      const currentData = this.flowClipboards.get(flowId);
+      if (!currentData) return;
+      
+      const nextPage = Math.floor(currentData.data.length / 10);
+      const result = await this.loadClipboardsForFlow(flowId, nextPage, 10);
+      
+      // Remove the "Load More" button
+      const loadMoreBtn = container.querySelector('.btn-outline');
+      if (loadMoreBtn) loadMoreBtn.remove();
+      
+      // Add new clipboards
+      result.data.forEach(clipboard => {
+        const clipboardItem = this.createClipboardItem(clipboard, flowId);
+        container.appendChild(clipboardItem);
+      });
+      
+      // Update cached data
+      currentData.data.push(...result.data);
+      currentData.hasMore = result.hasMore;
+      
+      // Add new "Load More" button if needed
+      if (result.hasMore) {
+        const loadMoreBtn = document.createElement('button');
+        loadMoreBtn.className = 'btn btn-outline';
+        loadMoreBtn.style.cssText = 'margin: 16px; width: calc(100% - 32px);';
+        loadMoreBtn.textContent = 'Load More Clipboards';
+        loadMoreBtn.addEventListener('click', () => this.loadMoreClipboards(flowId, container));
+        container.appendChild(loadMoreBtn);
+      }
+      
+    } catch (error) {
+      console.error('Failed to load more clipboards:', error);
+      this.showToast('Failed to load more clipboards', 'error');
+    }
   }
 
   renderPagination() {
@@ -447,14 +566,7 @@ class FullClipboardManager {
     this.render();
   }
 
-  async navigateToFlow(flowId, flowName) {
-    this.currentView = 'clipboards';
-    this.currentFlowId = flowId;
-    this.currentFlow = flowName;
-    this.currentPage = 0;
-    await this.loadCurrentView();
-    this.render();
-  }
+
 
   async navigateToView(view, data = {}) {
     if (view === 'domains') {
@@ -464,6 +576,8 @@ class FullClipboardManager {
       this.currentAppId = null;
       this.currentFlow = null;
       this.currentFlowId = null;
+      this.expandedFlows.clear();
+      this.flowClipboards.clear();
     } else if (view === 'apps') {
       this.currentView = 'apps';
       this.currentDomain = data.domain;
@@ -471,12 +585,15 @@ class FullClipboardManager {
       this.currentAppId = null;
       this.currentFlow = null;
       this.currentFlowId = null;
+      this.expandedFlows.clear();
+      this.flowClipboards.clear();
     } else if (view === 'flows') {
       this.currentView = 'flows';
       this.currentAppId = data.appId;
       this.currentApp = data.app;
       this.currentFlow = null;
       this.currentFlowId = null;
+      // Keep expanded flows when navigating back to flows
     }
     
     this.currentPage = 0;
@@ -503,7 +620,18 @@ class FullClipboardManager {
   // Action methods
   async copyToClipboard(clipboardId, buttonElement) {
     try {
-      const clipboard = this.currentData.find(c => c.id === clipboardId);
+      // Find clipboard in cached data
+      let clipboard = null;
+      for (const [flowId, flowData] of this.flowClipboards) {
+        clipboard = flowData.data.find(c => c.id === clipboardId);
+        if (clipboard) break;
+      }
+      
+      if (!clipboard) {
+        // Fallback: load directly from database
+        clipboard = await this.db.getClipboardById(clipboardId);
+      }
+      
       if (clipboard) {
         await navigator.clipboard.writeText(clipboard.content);
         
@@ -520,6 +648,8 @@ class FullClipboardManager {
         }
         
         this.showToast('Copied to clipboard!', 'success');
+      } else {
+        this.showToast('Clipboard entry not found', 'error');
       }
     } catch (error) {
       console.error('Failed to copy:', error);
@@ -527,13 +657,28 @@ class FullClipboardManager {
     }
   }
 
-  async deleteClipboard(clipboardId) {
+  async deleteClipboardFromFlow(clipboardId, flowId) {
     if (!confirm('Delete this clipboard entry?')) return;
     
     try {
       await this.db.deleteClipboard(clipboardId);
-      await this.loadCurrentView();
-      this.render();
+      
+      // Update cached data
+      const cachedData = this.flowClipboards.get(flowId);
+      if (cachedData) {
+        cachedData.data = cachedData.data.filter(c => c.id !== clipboardId);
+        cachedData.totalCount--;
+      }
+      
+      // Re-render the specific flow's clipboards
+      const flowCard = document.querySelector(`[data-flow-id="${flowId}"]`)?.closest('.flow-card');
+      if (flowCard) {
+        const container = flowCard.querySelector('.clipboards-container');
+        if (container && this.expandedFlows.has(flowId)) {
+          await this.loadAndRenderClipboards(flowId, container);
+        }
+      }
+      
       this.showToast('Clipboard deleted', 'success');
     } catch (error) {
       console.error('Failed to delete clipboard:', error);
