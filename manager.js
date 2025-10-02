@@ -344,6 +344,7 @@ class FullClipboardManager {
         </div>
       </div>
       <div class="flow-actions" style="display: flex; gap: 8px;">
+        <button class="btn btn-primary btn-sm" data-action="copy-latest" data-flow-id="${flow.id}">📋 Copy Latest</button>
         <button class="btn btn-danger btn-sm" data-action="delete-flow" data-flow-id="${flow.id}" data-flow-name="${flow.flowName}">🗑️ Delete</button>
       </div>
     `;
@@ -377,7 +378,16 @@ class FullClipboardManager {
       }
     });
     
+    const copyLatestBtn = header.querySelector('[data-action="copy-latest"]');
     const deleteBtn = header.querySelector('[data-action="delete-flow"]');
+    
+    if (copyLatestBtn) {
+      copyLatestBtn.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        await this.copyLatestFromFlow(flow.id, copyLatestBtn);
+      });
+    }
+    
     if (deleteBtn) {
       deleteBtn.addEventListener('click', (e) => {
         e.stopPropagation();
@@ -618,6 +628,38 @@ class FullClipboardManager {
   }
 
   // Action methods
+  async copyLatestFromFlow(flowId, buttonElement) {
+    try {
+      // Get the latest clipboard from this flow
+      const result = await this.loadClipboardsForFlow(flowId, 0, 1);
+      
+      if (result.data.length === 0) {
+        this.showToast('No clipboards found in this flow', 'error');
+        return;
+      }
+      
+      const latestClipboard = result.data[0];
+      await navigator.clipboard.writeText(latestClipboard.content);
+      
+      // Visual feedback
+      if (buttonElement) {
+        const originalText = buttonElement.innerHTML;
+        buttonElement.innerHTML = '✅ Copied!';
+        buttonElement.classList.add('copy-success');
+        
+        setTimeout(() => {
+          buttonElement.innerHTML = originalText;
+          buttonElement.classList.remove('copy-success');
+        }, 2000);
+      }
+      
+      this.showToast('Latest clipboard copied!', 'success');
+    } catch (error) {
+      console.error('Failed to copy latest clipboard:', error);
+      this.showToast('Failed to copy latest clipboard', 'error');
+    }
+  }
+
   async copyToClipboard(clipboardId, buttonElement) {
     try {
       // Find clipboard in cached data
