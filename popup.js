@@ -115,9 +115,14 @@ class ClipboardManager {
   }
 
   setupEventListeners() {
+    const openManagerBtn = document.getElementById('open-manager-btn');
     const settingsBtn = document.getElementById('settings-btn');
     const debugBtn = document.getElementById('debug-btn');
     const clearAllBtn = document.getElementById('clear-all-btn');
+
+    if (openManagerBtn) {
+      openManagerBtn.addEventListener('click', () => this.openFullManager());
+    }
 
     if (settingsBtn) {
       settingsBtn.addEventListener('click', () => this.showSettings());
@@ -134,6 +139,10 @@ class ClipboardManager {
         }
       });
     }
+  }
+
+  openFullManager() {
+    chrome.tabs.create({ url: chrome.runtime.getURL('manager.html') });
   }
 
   async debugDB() {
